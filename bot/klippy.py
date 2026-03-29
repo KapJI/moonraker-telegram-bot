@@ -664,20 +664,21 @@ class Klippy:
         res = await self.make_request("GET", f"/server/database/item?namespace={self._dbname}&key={param_name}")
         if res.is_success:
             return orjson.loads(res.text)["result"]["value"]
-        logger.error("Failed getting %s from %s \n\n%s", param_name, self._dbname, res)
-        # TODO: [fixme] return default value? check for 404!
+        if res.status_code == httpx.codes.NOT_FOUND:
+            return None
+        logger.error("Failed getting %s from database: %s", param_name, res.status_code)
         return None
 
     async def save_param_to_db(self, param_name: str, value: Any) -> None:
         data = {"namespace": self._dbname, "key": param_name, "value": value}
         res = await self.make_request("POST", "/server/database/item", json=data)
         if not res.is_success:
-            logger.error("Failed saving %s to %s \n\n%s", param_name, self._dbname, res)
+            logger.error("Failed saving %s to database: %s", param_name, res.status_code)
 
     async def delete_param_from_db(self, param_name: str) -> None:
         res = await self.make_request("DELETE", f"/server/database/item?namespace={self._dbname}&key={param_name}")
         if not res.is_success:
-            logger.error("Failed getting %s from %s \n\n%s", param_name, self._dbname, res)
+            logger.error("Failed deleting %s from database: %s", param_name, res.status_code)
 
     # macro data section
     async def save_data_to_macro(self, lapse_size: int, filename: str, path: str) -> None:
