@@ -181,7 +181,7 @@ class Timelapse:
     @is_running.setter
     def is_running(self, new_val: bool) -> None:
         if new_val != self._running:
-            logger.info("Timelapse is_running: %s -> %s", self._running, new_val)
+            logger.debug("Timelapse is_running: %s -> %s", self._running, new_val)
         self._running = new_val
         self._paused = False
         if new_val:
@@ -224,10 +224,10 @@ class Timelapse:
         gcode_command = self._after_photo_gcode if gcode and self._after_photo_gcode else ""
 
         if position_z is None:
-            logger.debug("Taking lapse photo (no position)")
+            logger.debug("Taking lapse photo")
             self._executors_pool.submit(self._camera.take_lapse_photo, gcode=gcode_command).add_done_callback(logging_callback)
         elif self._height > 0.0 and (position_z >= self._last_height + self._height or 0.0 < position_z < self._last_height - self._height):
-            logger.info("Taking lapse photo at Z=%.2f (last=%.2f, threshold=%.2f)", position_z, self._last_height, self._height)
+            logger.debug("Taking lapse photo at Z=%.2f (last=%.2f, threshold=%.2f)", position_z, self._last_height, self._height)
             self._executors_pool.submit(self._camera.take_lapse_photo, gcode=gcode_command).add_done_callback(logging_callback)
             self._last_height = position_z
             self._schedule_save()
