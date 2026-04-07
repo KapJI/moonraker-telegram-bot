@@ -28,7 +28,7 @@ def make_notifier(height: float = 5.0, percent: int = 0) -> Notifier:
     klippy.printing = True
     klippy.printing_duration = 100.0
 
-    return Notifier(config, MagicMock(), klippy, MagicMock(), MagicMock(), logging.NullHandler())
+    return Notifier(config, MagicMock(), klippy, [MagicMock()], MagicMock(), logging.NullHandler())
 
 
 def test_height_notification_triggers_at_threshold() -> None:

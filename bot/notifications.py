@@ -45,7 +45,7 @@ class Notifier:
         self._status_cameras: list[Camera] = status_cameras
 
         self._sched: BaseScheduler = scheduler
-        self._executors_pool: ThreadPoolExecutor = ThreadPoolExecutor(2, thread_name_prefix="notifier_pool")
+        self._executors_pool: ThreadPoolExecutor = ThreadPoolExecutor(max(2, len(status_cameras)), thread_name_prefix="notifier_pool")
         self._klippy: Klippy = klippy
 
         self._enabled: bool = config.notifications.enabled
@@ -72,8 +72,10 @@ class Notifier:
         self._last_tgnotify_status: str = ""
 
         self._status_message: Message | None = None
+        self._status_media_group: list[Message] = []
         self._bzz_mess_id: int = 0
         self._groups_status_messages: dict[int, Message] = {}
+        self._groups_status_media_group: dict[int, list[Message]] = {}
 
         if logging_handler:
             logger.addHandler(logging_handler)
@@ -186,6 +188,11 @@ class Notifier:
                     continue
                 self._groups_status_messages[group] = sent_message
 
+    async def _take_photos(self) -> list[BytesIO]:
+        loop = asyncio.get_running_loop()
+        tasks = [loop.run_in_executor(self._executors_pool, cam.take_photo) for cam in self._status_cameras]
+        return list(await asyncio.gather(*tasks))
+
     async def _send_photo(self, message: TelegramMessageRepr, group_only: bool = False, manual: bool = False) -> None:
         if not self._status_cameras:
             return
@@ -199,19 +206,50 @@ class Notifier:
             for photo in photos:
                 photo.close()
 
-            for group, message_thread_id in self._notify_groups:
-                photo.seek(0)
-                await self._bot.send_chat_action(chat_id=group, message_thread_id=message_thread_id, action=ChatAction.UPLOAD_PHOTO)
-                if group in self._groups_status_messages and not manual:
-                    mess = self._groups_status_messages[group]
-                    await message.update_existing(mess, photo=photo)
-                else:
-                    sent_message = await message.send(self._bot, group, photo=photo, message_thread_id=message_thread_id)
-                    if group in self._groups_status_messages or manual:
-                        continue
+    async def _send_single_photo(self, message: TelegramMessageRepr, photo: BytesIO, group_only: bool = False, manual: bool = False) -> None:
+        if not group_only:
+            if self._status_message and not manual:
+                await message.update_existing(self._status_message, photo=photo)
+                await self._send_bzz_message(message)
+            else:
+                sent_message = await message.send(self._bot, self._chat_id, photo=photo)
+                if not self._status_message and not manual:
+                    self._status_message = sent_message
+
+        for group, message_thread_id in self._notify_groups:
+            photo.seek(0)
+            await self._bot.send_chat_action(chat_id=group, message_thread_id=message_thread_id, action=ChatAction.UPLOAD_PHOTO)
+            if group in self._groups_status_messages and not manual:
+                await message.update_existing(self._groups_status_messages[group], photo=photo)
+            else:
+                sent_message = await message.send(self._bot, group, photo=photo, message_thread_id=message_thread_id)
+                if group not in self._groups_status_messages and not manual:
                     self._groups_status_messages[group] = sent_message
 
-            photo.close()
+    async def _send_multi_photo(self, message: TelegramMessageRepr, photos: list[BytesIO], group_only: bool = False, manual: bool = False) -> None:
+        if not group_only:
+            if self._status_media_group and not manual:
+                await message.update_existing_media_group(self._status_media_group, photos)
+                await self._send_bzz_message(message)
+            else:
+                sent_messages = await message.send_media_group(self._bot, self._chat_id, photos)
+                if not self._status_media_group and not manual:
+                    self._status_media_group = sent_messages
+                    self._status_message = sent_messages[0]
+                    for photo in photos:
+                        photo.seek(0)
+                    await message.update_existing_media_group(sent_messages, photos)
+
+        for group, message_thread_id in self._notify_groups:
+            for photo in photos:
+                photo.seek(0)
+            await self._bot.send_chat_action(chat_id=group, message_thread_id=message_thread_id, action=ChatAction.UPLOAD_PHOTO)
+            if group in self._groups_status_media_group and not manual:
+                await message.update_existing_media_group(self._groups_status_media_group[group], photos)
+            else:
+                sent_messages = await message.send_media_group(self._bot, group, photos, message_thread_id=message_thread_id)
+                if group not in self._groups_status_media_group and not manual:
+                    self._groups_status_media_group[group] = sent_messages
 
     async def _notify(self, message: TelegramMessageRepr, group_only: bool = False, manual: bool = False, state: PrintState = PrintState.PRINTING) -> None:
         if state.is_finished:
@@ -327,7 +365,9 @@ class Notifier:
                 logger.warning("Failed unpining status message \n%s", badreq)
 
         self._status_message = None
+        self._status_media_group = []
         self._groups_status_messages = {}
+        self._groups_status_media_group = {}
         if self._bzz_mess_id != 0:
             try:
                 await self._bot.delete_message(self._chat_id, self._bzz_mess_id)

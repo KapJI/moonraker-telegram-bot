@@ -140,7 +140,7 @@ _MAX_BOT_COMMANDS: Final = 100
 config_wrap: ConfigWrapper
 main_pid = os.getpid()
 cameras: dict[str, Camera]
-status_camera: Camera | None
+status_cameras: list[Camera]
 timelapse: Timelapse
 notifier: Notifier
 klippy: Klippy
@@ -202,16 +202,25 @@ async def unknown_chat(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def status_no_confirm(effective_message: Message) -> None:
-    cam = status_camera
     is_inline_button_press = effective_message.from_user is not None and effective_message.from_user.id == effective_message.get_bot().id
     if klippy.printing and not config_wrap.notifications.group_only:
         notifier.update_status()
     else:
         text = await klippy.get_status()
         message = TelegramMessageRepr(text, parse_mode=ParseMode.HTML, silent=notifier.silent_commands, reply_markup=notifier.get_status_keyboard(state=PrintState.STANDBY))
-        if cam:
-            loop_loc = asyncio.get_running_loop()
-            with await loop_loc.run_in_executor(executors_pool, cam.take_photo) as bio:
+        loop_loc = asyncio.get_running_loop()
+        if len(status_cameras) > 1:
+            photos = list(await asyncio.gather(*(loop_loc.run_in_executor(executors_pool, cam.take_photo) for cam in status_cameras)))
+            try:
+                if is_inline_button_press:
+                    await message.update_existing_media_group([effective_message], photos)
+                else:
+                    await message.send_as_reply_media_group(effective_message, photos)
+            finally:
+                for photo in photos:
+                    photo.close()
+        elif len(status_cameras) == 1:
+            with await loop_loc.run_in_executor(executors_pool, status_cameras[0].take_photo) as bio:
                 if is_inline_button_press:
                     await message.update_existing(effective_message, photo=bio)
                 else:
@@ -1470,10 +1479,10 @@ if __name__ == "__main__":
 
     cameras = {name: cam for name, cam_config in config_wrap.cameras.items() if (cam := create_camera(cam_config, config_wrap, klippy, rotating_handler))}
     timelapse_cameras = [cameras[name] for name in config_wrap.timelapse_cameras]
-    status_camera = next((cameras[name] for name in config_wrap.status_cameras), None)
+    status_cameras = [cameras[name] for name in config_wrap.status_cameras]
     bot_updater = start_bot(config_wrap)
     timelapse = Timelapse(config_wrap, klippy, timelapse_cameras, a_scheduler, bot_updater.bot, rotating_handler)
-    notifier = Notifier(config_wrap, bot_updater.bot, klippy, status_camera, a_scheduler, rotating_handler)
+    notifier = Notifier(config_wrap, bot_updater.bot, klippy, status_cameras, a_scheduler, rotating_handler)
 
     ws_helper = WebSocketHelper(config_wrap, klippy, notifier, timelapse, a_scheduler, rotating_handler)
 

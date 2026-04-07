@@ -9,6 +9,7 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.helpers import escape_markdown
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from io import BytesIO
 
 
@@ -90,3 +91,39 @@ class TelegramMessageRepr:
                 parse_mode=self._parse_mode,
                 reply_markup=self._reply_markup,
             )
+
+    def _build_media_group(self, photos: Sequence[BytesIO | bytes]) -> list[InputMediaPhoto]:
+        media = [InputMediaPhoto(photos[0], caption=self._text, parse_mode=self._parse_mode)]
+        media.extend(InputMediaPhoto(p) for p in photos[1:])
+        return media
+
+    async def send_media_group(self, bot: Bot, chat_id: int, photos: Sequence[BytesIO | bytes], message_thread_id: int | None = None) -> list[Message]:
+        return list(
+            await bot.send_media_group(
+                chat_id,
+                media=self._build_media_group(photos),
+                disable_notification=self._silent,
+                message_thread_id=message_thread_id,
+            )
+        )
+
+    async def send_as_reply_media_group(self, other_message: Message, photos: Sequence[BytesIO | bytes]) -> list[Message]:
+        await other_message.get_bot().send_chat_action(other_message.chat_id, action=ChatAction.UPLOAD_PHOTO)
+        return list(
+            await other_message.get_bot().send_media_group(
+                other_message.chat_id,
+                media=self._build_media_group(photos),
+                disable_notification=self._silent,
+                reply_to_message_id=other_message.message_id,
+            )
+        )
+
+    async def update_existing_media_group(self, messages: list[Message], photos: Sequence[BytesIO | bytes]) -> None:
+        for i, (msg, photo) in enumerate(zip(messages, photos)):
+            if i == 0:
+                await msg.edit_media(
+                    media=InputMediaPhoto(photo, caption=self._text, parse_mode=self._parse_mode),
+                    reply_markup=self._reply_markup,
+                )
+            else:
+                await msg.edit_media(media=InputMediaPhoto(photo))
