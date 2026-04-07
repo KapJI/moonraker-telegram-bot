@@ -11,6 +11,7 @@ import logging
 import math
 import os
 from pathlib import Path
+import shutil
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Final
@@ -269,9 +270,7 @@ class Timelapse:
         for cam in self._cameras:
             lapse_dir = self._lapse_dir(cam)
             if self._cleanup and self._klippy.printing_filename and lapse_dir.is_dir():
-                for filename in lapse_dir.iterdir():
-                    filename.unlink()
-                lapse_dir.rmdir()
+                shutil.rmtree(lapse_dir)
 
     def _add_timelapse_timer(self) -> None:
         if self._interval > 0 and not self._sched.get_job("timelapse_timer"):
@@ -516,9 +515,7 @@ class Timelapse:
     def _cleanup_lapse(self, cam_name: str, lapse_filename: str, *, force: bool = False) -> None:
         lapse_dir = self._base_dir / cam_name / lapse_filename if cam_name else self._base_dir / lapse_filename
         if self._cleanup or force:
-            for filename in lapse_dir.iterdir():
-                filename.unlink()
-            lapse_dir.rmdir()
+            shutil.rmtree(lapse_dir)
 
     # TODO: check if lapse was in subfolder (alike gcode folders)
     # TODO: check for 64 symbols length in lapse names
