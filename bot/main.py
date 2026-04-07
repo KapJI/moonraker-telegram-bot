@@ -154,6 +154,29 @@ def default_camera() -> Camera | None:
     return next(iter(cameras.values()), None)
 
 
+def _resolve_camera(args: list[str] | None) -> Camera | None:
+    """Resolve camera from command arguments. Returns None if selection is needed."""
+    if len(cameras) <= 1:
+        return default_camera()
+    if args:
+        name = " ".join(args)
+        if name in cameras:
+            return cameras[name]
+    return None
+
+
+async def _send_camera_selection(effective_message: Message, command: str) -> None:
+    """Send inline keyboard for camera selection."""
+    buttons = [InlineKeyboardButton(name, callback_data=f"{command}:{name}") for name in cameras]
+    keyboard = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
+    await effective_message.reply_text(
+        emoji.emojize(":camera: Select camera:", language="alias"),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        disable_notification=notifier.silent_commands,
+        do_quote=True,
+    )
+
+
 async def echo_unknown(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
@@ -290,15 +313,20 @@ async def get_video_no_confirm(effective_message: Message, camera: Camera | None
         thumb_bio.close()
 
 
-async def get_video(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+async def get_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_message is None:
         logger.warning("Undefined effective message")
         return
 
+    cam = _resolve_camera(context.args)
+    if cam is None:
+        await _send_camera_selection(update.effective_message, "video")
+        return
+
     if config_wrap.telegram_ui.is_present_in_require_confirmation("video") or config_wrap.telegram_ui.confirm_command():
-        await command_confirm_message(update, text="Get video?", callback_mess="video:")
+        await command_confirm_message(update, text="Get video?", callback_mess=f"video:{cam.name}")
     else:
-        await get_video_no_confirm(update.effective_message)
+        await get_video_no_confirm(update.effective_message, cam)
 
 
 def confirm_keyboard(callback_mess: str) -> InlineKeyboardMarkup:
@@ -841,6 +869,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await get_macros_no_confirm(update.effective_message.reply_to_message)
     elif "help:" in query.data:
         await help_command_no_confirm(update.effective_message.reply_to_message)
+    elif query.data.startswith("video:"):
+        cam_name = query.data.removeprefix("video:")
+        cam = cameras.get(cam_name)
+        if cam is None:
+            logger.error("Camera '%s' not found for video callback", cam_name)
+        else:
+            await get_video_no_confirm(update.effective_message.reply_to_message, cam)
     elif "status:" in query.data:
         await status_no_confirm(update.effective_message.reply_to_message)
     elif "ip:" in query.data:
