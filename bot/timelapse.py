@@ -44,12 +44,12 @@ class Timelapse:
         self,
         config: ConfigWrapper,
         klippy: Klippy,
-        camera: Camera,
+        camera: Camera | None,
         scheduler: BaseScheduler,
         bot: Bot,
         logging_handler: logging.Handler,
     ) -> None:
-        self._enabled: bool = config.timelapse.enabled and camera.enabled
+        self._enabled: bool = config.timelapse.enabled and camera is not None
         self._mode_manual: bool = config.timelapse.mode_manual
         self._height: float = config.timelapse.height
         self._interval: int = config.timelapse.interval
@@ -63,12 +63,11 @@ class Timelapse:
         self._after_lapse_gcode: str = config.timelapse.after_lapse_gcode
         self._send_finished_lapse: bool = config.timelapse.send_finished_lapse
         self._after_photo_gcode: str = config.timelapse.after_photo_gcode
-        self._fourcc: str = config.camera.fourcc
 
         self._silent_progress: bool = config.telegram_ui.silent_progress
 
         self._klippy: Klippy = klippy
-        self._camera: Camera = camera
+        self._camera: Camera | None = camera
 
         self._base_dir: Path = config.timelapse.base_dir
         self._ready_dir: Path | None = config.timelapse.ready_dir
@@ -213,6 +212,8 @@ class Timelapse:
             self._lapse_missed_frames += 1
 
     def _take_lapse_and_gcode(self, lapse_dir: Path, after_gcode: str | None) -> bool:
+        if self._camera is None:
+            return False
         result = self._camera.take_lapse_photo(lapse_dir)
         if after_gcode:
             try:
@@ -294,7 +295,7 @@ class Timelapse:
                 await info_mess.edit_text(text="Uploading time-lapse")
 
                 if len(video_bytes) > self._max_upload_file_size * 1024 * 1024:
-                    await info_mess.edit_text(text=f"Telegram bots have a {self._max_upload_file_size}mb filesize restriction, please retrieve the timelapse from the configured folder\n{video_path}")
+                    await info_msg.edit_text(text=f"Telegram bots have a {self._max_upload_file_size}mb filesize restriction, please retrieve the timelapse from the configured folder\n{video_path}")
                 else:
                     lapse_caption = f"time-lapse of {gcode_name}"
                     if self._lapse_missed_frames > 0:
@@ -310,7 +311,7 @@ class Timelapse:
                         disable_notification=self._silent_progress,
                     )
                     try:
-                        await self._bot.delete_message(self._chat_id, message_id=info_mess.message_id)
+                        await self._bot.delete_message(self._chat_id, message_id=info_msg.message_id)
                     except BadRequest as badreq:
                         logger.warning("Failed deleting message \n%s", badreq)
                     self._cleanup_lapse(lapse_filename)
@@ -328,7 +329,7 @@ class Timelapse:
                 await self._klippy.execute_gcode_script(self._after_lapse_gcode.strip())
         except Exception as ex:
             logger.warning("Failed to send time-lapse to telegram bot: %s", ex)
-            await info_mess.edit_text(text=f"Failed to send time-lapse to telegram bot: {ex!s}")
+            await info_msg.edit_text(text=f"Failed to send time-lapse to telegram bot: {ex!s}")
 
     async def _send_lapse(self) -> None:
         if not self._enabled or not self._klippy.printing_filename:
@@ -393,6 +394,10 @@ class Timelapse:
             msg = "Gcode file name is empty"
             raise ValueError(msg)
 
+        if self._camera is None:
+            msg = "Camera is not configured"
+            raise ValueError(msg)
+
         while self._camera.light_need_off:
             time.sleep(1)
 
@@ -413,7 +418,7 @@ class Timelapse:
 
         raw_frames.sort(key=os.path.getmtime)
 
-        asyncio.run_coroutine_threadsafe(info_mess.edit_text(text="Creating thumbnail"), loop).result()
+        asyncio.run_coroutine_threadsafe(info_msg.edit_text(text="Creating thumbnail"), loop).result()
         last_frame = raw_frames[-1]
         img = self._camera.get_frame(last_frame)
 
@@ -431,20 +436,20 @@ class Timelapse:
 
         out = ffmpegcv.VideoWriter(
             video_filepath.as_posix(),
-            codec=self._fourcc,
+            codec=self._camera.fourcc,
             fps=lapse_fps,
         )
 
-        asyncio.run_coroutine_threadsafe(info_mess.edit_text(text="Images recoding"), loop).result()
+        asyncio.run_coroutine_threadsafe(info_msg.edit_text(text="Images recoding"), loop).result()
         last_update_time = time.time()
         frames_skipped = 0
         frames_recorded = 0
         for fnum, filename in enumerate(raw_frames):
             if time.time() >= last_update_time + 10:
                 if self._limit_fps:
-                    asyncio.run_coroutine_threadsafe(info_mess.edit_text(text=f"Images processed: {fnum}/{photo_count}, recorded: {frames_recorded}, skipped: {frames_skipped}"), loop).result()
+                    asyncio.run_coroutine_threadsafe(info_msg.edit_text(text=f"Images processed: {fnum}/{photo_count}, recorded: {frames_recorded}, skipped: {frames_skipped}"), loop).result()
                 else:
-                    asyncio.run_coroutine_threadsafe(info_mess.edit_text(text=f"Images recoded {fnum}/{photo_count}"), loop).result()
+                    asyncio.run_coroutine_threadsafe(info_msg.edit_text(text=f"Images recoded {fnum}/{photo_count}"), loop).result()
                 last_update_time = time.time()
 
             if not self._limit_fps or fnum % odd_frames == 0:
@@ -454,12 +459,12 @@ class Timelapse:
                 frames_skipped += 1
 
         if self._last_frame_duration > 0:
-            asyncio.run_coroutine_threadsafe(info_mess.edit_text(text=f"Repeating last image for {self._last_frame_duration} seconds"), loop).result()
+            asyncio.run_coroutine_threadsafe(info_msg.edit_text(text=f"Repeating last image for {self._last_frame_duration} seconds"), loop).result()
             for _ in range(lapse_fps * self._last_frame_duration):
                 out.write(img)
 
         if self._limit_fps:
-            asyncio.run_coroutine_threadsafe(info_mess.edit_text(text=f"Images recorded: {frames_recorded}, skipped: {frames_skipped}"), loop).result()
+            asyncio.run_coroutine_threadsafe(info_msg.edit_text(text=f"Images recorded: {frames_recorded}, skipped: {frames_skipped}"), loop).result()
 
         out.release()
         del out, raw_frames, img, last_frame
@@ -469,7 +474,7 @@ class Timelapse:
         with video_filepath.open("rb") as fh:
             video_bytes = fh.read()
         if self._ready_dir and self._ready_dir.is_dir():
-            asyncio.run_coroutine_threadsafe(info_mess.edit_text(text="Copy lapse to target ditectory"), loop).result()
+            asyncio.run_coroutine_threadsafe(info_msg.edit_text(text="Copy lapse to target ditectory"), loop).result()
             target_video_file = self._ready_dir / f"{printing_filename}.mp4"
             target_video_file.parent.mkdir(parents=True, exist_ok=True)
             with target_video_file.open("wb") as cpf:

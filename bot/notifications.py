@@ -36,13 +36,13 @@ class Notifier:
         config: ConfigWrapper,
         bot: Bot,
         klippy: Klippy,
-        camera_wrapper: Camera,
+        status_cameras: list[Camera],
         scheduler: BaseScheduler,
         logging_handler: logging.Handler,
     ) -> None:
         self._bot: Bot = bot
         self._chat_id: int = config.secrets.chat_id
-        self._cam_wrap: Camera = camera_wrapper
+        self._status_cameras: list[Camera] = status_cameras
 
         self._sched: BaseScheduler = scheduler
         self._executors_pool: ThreadPoolExecutor = ThreadPoolExecutor(2, thread_name_prefix="notifier_pool")
@@ -187,16 +187,17 @@ class Notifier:
                 self._groups_status_messages[group] = sent_message
 
     async def _send_photo(self, message: TelegramMessageRepr, group_only: bool = False, manual: bool = False) -> None:
-        loop = asyncio.get_running_loop()
-        with await loop.run_in_executor(self._executors_pool, self._cam_wrap.take_photo) as photo:
-            if not group_only:
-                if self._status_message and not manual:
-                    await message.update_existing(self._status_message, photo=photo)
-                    await self._send_bzz_message(message)
-                else:
-                    sent_message = await message.send(self._bot, self._chat_id, photo=photo)
-                    if not self._status_message and not manual:
-                        self._status_message = sent_message
+        if not self._status_cameras:
+            return
+        photos = await self._take_photos()
+        try:
+            if len(photos) == 1:
+                await self._send_single_photo(message, photos[0], group_only=group_only, manual=manual)
+            else:
+                await self._send_multi_photo(message, photos, group_only=group_only, manual=manual)
+        finally:
+            for photo in photos:
+                photo.close()
 
             for group, message_thread_id in self._notify_groups:
                 photo.seek(0)
@@ -216,7 +217,7 @@ class Notifier:
         if state.is_finished:
             await asyncio.sleep(5)
         try:
-            if self._cam_wrap.enabled:
+            if self._status_cameras:
                 await self._send_photo(message, group_only=group_only, manual=manual)
             else:
                 await self._send_message(message, group_only=group_only, manual=manual)
