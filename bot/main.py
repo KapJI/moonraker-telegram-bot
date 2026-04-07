@@ -148,6 +148,7 @@ light_power_device: PowerDevice | None
 psu_power_device: PowerDevice | None
 ws_helper: WebSocketHelper
 executors_pool: ThreadPoolExecutor = ThreadPoolExecutor(2, thread_name_prefix="bot_pool")
+_lapse_hash_map: dict[str, tuple[str, str]] = {}
 
 
 def default_camera() -> Camera | None:
@@ -238,7 +239,13 @@ async def check_unfinished_lapses(bot: telegram.Bot) -> None:
     if not files:
         return
     await bot.send_chat_action(chat_id=config_wrap.secrets.chat_id, action=ChatAction.TYPING)
-    files_keys: list[list[InlineKeyboardButton]] = [[InlineKeyboardButton(text=el, callback_data=f"lapse:{hashlib.md5(el.encode()).hexdigest()}")] for el in files]
+    _lapse_hash_map.clear()
+    files_keys: list[list[InlineKeyboardButton]] = []
+    for cam_name, lapse_name in files:
+        lapse_hash = hashlib.md5(f"{cam_name}:{lapse_name}".encode()).hexdigest()
+        _lapse_hash_map[lapse_hash] = (cam_name, lapse_name)
+        label = f"{lapse_name} ({cam_name})" if len(cameras) > 1 else lapse_name
+        files_keys.append([InlineKeyboardButton(text=label, callback_data=f"lapse:{lapse_hash}")])
     files_keys.append(
         [
             InlineKeyboardButton(
@@ -675,19 +682,24 @@ async def button_lapse_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.message is None or not query.message.is_accessible or not isinstance(query.message, Message):
         logger.error("Undefined callback_query.message for %s", query.to_json())
         return
-    if query.message.reply_markup is None:
-        logger.error("Undefined query.message.reply_markup in %s", query.message.to_json())
+    if query.data is None:
+        logger.error("Undefined query.data in %s", query.message.to_json())
         return
 
-    lapse_name = next(
-        filter(
-            lambda el: el[0].callback_data == query.data,
-            query.message.reply_markup.inline_keyboard,
-        ),
-    )[0].text
+    # callback_data format: "lapse:{hash}"
+    lapse_hash = query.data.removeprefix("lapse:")
+    lapse_info = _lapse_hash_map.get(lapse_hash)
+    if lapse_info is None:
+        logger.error("Unknown lapse hash '%s'", lapse_hash)
+        return
+    cam_name, lapse_name = lapse_info
+    cam = cameras.get(cam_name)
+    if cam is None:
+        logger.error("Camera '%s' not found for lapse callback", cam_name)
+        return
 
     await context.bot.send_chat_action(chat_id=config_wrap.secrets.chat_id, action=ChatAction.RECORD_VIDEO)
-    await timelapse.upload_timelapse(lapse_name, info_mess)
+    await timelapse.upload_timelapse(cam, lapse_name)
     await query.delete_message()
     await check_unfinished_lapses(context.bot)
 
@@ -1457,10 +1469,10 @@ if __name__ == "__main__":
     klippy.light_device = light_power_device
 
     cameras = {name: cam for name, cam_config in config_wrap.cameras.items() if (cam := create_camera(cam_config, config_wrap, klippy, rotating_handler))}
-    timelapse_camera = next((cameras[name] for name in config_wrap.timelapse_cameras), None)
+    timelapse_cameras = [cameras[name] for name in config_wrap.timelapse_cameras]
     status_camera = next((cameras[name] for name in config_wrap.status_cameras), None)
     bot_updater = start_bot(config_wrap)
-    timelapse = Timelapse(config_wrap, klippy, timelapse_camera, a_scheduler, bot_updater.bot, rotating_handler)
+    timelapse = Timelapse(config_wrap, klippy, timelapse_cameras, a_scheduler, bot_updater.bot, rotating_handler)
     notifier = Notifier(config_wrap, bot_updater.bot, klippy, status_camera, a_scheduler, rotating_handler)
 
     ws_helper = WebSocketHelper(config_wrap, klippy, notifier, timelapse, a_scheduler, rotating_handler)

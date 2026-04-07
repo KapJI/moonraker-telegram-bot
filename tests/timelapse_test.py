@@ -45,12 +45,12 @@ def make_timelapse(base_dir: Path, *, cleanup: bool = True) -> Timelapse:
     scheduler = MagicMock()
     scheduler.get_job.return_value = None
 
-    return Timelapse(config, klippy, camera, scheduler, MagicMock(), MagicMock())
+    return Timelapse(config, klippy, [camera], scheduler, MagicMock(), MagicMock())
 
 
-def _create_test_lapses(test_dir: Path) -> None:
+def _create_test_lapses(test_dir: Path, camera_name: str = "default") -> None:
     for lap in LAPSES_NAMES:
-        lap_path = test_dir / lap
+        lap_path = test_dir / camera_name / lap
         lap_path.mkdir(parents=True, exist_ok=True)
         (lap_path / "lapse.lock").touch()
 
@@ -60,11 +60,31 @@ def test_detect_unfinished_lapses(tmp_path: Path) -> None:
     tl = make_timelapse(tmp_path)
     lapses_list = tl.detect_unfinished_lapses()
     lapses_list.sort()
-    assert lapses_list == LAPSES_NAMES
+    assert lapses_list == [("default", name) for name in LAPSES_NAMES]
 
 
 def test_cleanup_unfinished_lapses(tmp_path: Path) -> None:
     _create_test_lapses(tmp_path)
+    tl = make_timelapse(tmp_path)
+    tl.cleanup_unfinished_lapses()
+    cam_dir = tmp_path / "default"
+    assert not any(cam_dir.iterdir())
+
+
+def test_detect_ignores_old_format_lapses(tmp_path: Path) -> None:
+    for lap in LAPSES_NAMES:
+        lap_path = tmp_path / lap
+        lap_path.mkdir(parents=True, exist_ok=True)
+        (lap_path / "lapse.lock").touch()
+    tl = make_timelapse(tmp_path)
+    assert tl.detect_unfinished_lapses() == []
+
+
+def test_cleanup_old_format_lapses(tmp_path: Path) -> None:
+    for lap in LAPSES_NAMES:
+        lap_path = tmp_path / lap
+        lap_path.mkdir(parents=True, exist_ok=True)
+        (lap_path / "lapse.lock").touch()
     tl = make_timelapse(tmp_path)
     tl.cleanup_unfinished_lapses()
     assert not any(tmp_path.iterdir())
