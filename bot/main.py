@@ -1516,8 +1516,8 @@ if __name__ == "__main__":
     klippy.light_device = light_power_device
 
     cameras = {name: cam for name, cam_config in config_wrap.cameras.items() if (cam := create_camera(cam_config, config_wrap, klippy, rotating_handler))}
-    timelapse_cameras = [cameras[name] for name in config_wrap.timelapse_cameras]
-    status_cameras = [cameras[name] for name in config_wrap.status_cameras]
+    timelapse_cameras = [cameras[name] for name in config_wrap.timelapse_cameras if name in cameras]
+    status_cameras = [cameras[name] for name in config_wrap.status_cameras if name in cameras]
     bot_updater = start_bot(config_wrap)
     timelapse = Timelapse(config_wrap, klippy, timelapse_cameras, a_scheduler, bot_updater.bot, rotating_handler)
     notifier = Notifier(config_wrap, bot_updater.bot, klippy, status_cameras, a_scheduler, rotating_handler)
