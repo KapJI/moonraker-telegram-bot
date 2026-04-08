@@ -198,13 +198,30 @@ class Notifier:
 
     async def _take_photos(self) -> list[BytesIO]:
         loop = asyncio.get_running_loop()
-        tasks = [loop.run_in_executor(self._executors_pool, cam.take_photo) for cam in self._status_cameras]
-        return list(await asyncio.gather(*tasks))
+        results = await asyncio.gather(
+            *(loop.run_in_executor(self._executors_pool, cam.take_photo) for cam in self._status_cameras),
+            return_exceptions=True,
+        )
+        photos: list[BytesIO] = []
+        for cam, result in zip(self._status_cameras, results):
+            if isinstance(result, BaseException):
+                logger.warning("Camera '%s' failed to take photo: %s", cam.name, result)
+                await self._bot.send_message(self._chat_id, text=f"Camera '{cam.name}' failed to take photo: {result}")
+                continue
+            if result.getbuffer().nbytes == 0:
+                logger.warning("Camera '%s' returned empty photo", cam.name)
+                await self._bot.send_message(self._chat_id, text=f"Camera '{cam.name}' returned empty photo")
+                result.close()
+                continue
+            photos.append(result)
+        return photos
 
     async def _send_photo(self, message: TelegramMessageRepr, group_only: bool = False, manual: bool = False) -> None:
         if not self._status_cameras:
             return
         photos = await self._take_photos()
+        if not photos:
+            return
         try:
             if len(photos) == 1:
                 await self._send_single_photo(message, photos[0], group_only=group_only, manual=manual)

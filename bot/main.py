@@ -211,9 +211,27 @@ async def status_no_confirm(effective_message: Message, album_message_ids: list[
         message = TelegramMessageRepr(text, parse_mode=ParseMode.HTML, silent=notifier.silent_commands, reply_markup=notifier.get_status_keyboard(state=PrintState.STANDBY))
         loop_loc = asyncio.get_running_loop()
         if len(status_cameras) > 1:
-            if not is_inline_button_press:
+            if is_inline_button_press and album_message_ids:
+                # Update text immediately before capturing photos
+                keyboard = notifier.get_status_keyboard(state=PrintState.STANDBY, album_message_ids=album_message_ids)
+                msg = TelegramMessageRepr(text, parse_mode=ParseMode.HTML, silent=notifier.silent_commands, reply_markup=keyboard)
+                with contextlib.suppress(BadRequest):
+                    await msg.update_existing(effective_message)
+            else:
                 await effective_message.get_bot().send_chat_action(effective_message.chat_id, action=ChatAction.UPLOAD_PHOTO)
-            photos = list(await asyncio.gather(*(loop_loc.run_in_executor(executors_pool, cam.take_photo) for cam in status_cameras)))
+            results = await asyncio.gather(*(loop_loc.run_in_executor(executors_pool, cam.take_photo) for cam in status_cameras), return_exceptions=True)
+            photos: list[BytesIO] = []
+            for cam, result in zip(status_cameras, results):
+                if isinstance(result, BaseException):
+                    await effective_message.reply_text(f"Camera '{cam.name}' failed: {result}", do_quote=True)
+                    continue
+                if result.getbuffer().nbytes == 0:
+                    await effective_message.reply_text(f"Camera '{cam.name}' returned empty photo", do_quote=True)
+                    result.close()
+                    continue
+                photos.append(result)
+            if not photos:
+                return
             try:
                 if is_inline_button_press and album_message_ids:
                     bot = effective_message.get_bot()
@@ -224,11 +242,6 @@ async def status_no_confirm(effective_message: Message, album_message_ids: list[
                                 message_id=mid,
                                 media=InputMediaPhoto(photos[i]),
                             )
-                    keyboard = notifier.get_status_keyboard(state=PrintState.STANDBY, album_message_ids=album_message_ids)
-                    message = TelegramMessageRepr(text, parse_mode=ParseMode.HTML, silent=notifier.silent_commands, reply_markup=keyboard)
-                    # Telegram rejects edit if status text hasn't changed (idle printer)
-                    with contextlib.suppress(BadRequest):
-                        await message.update_existing(effective_message)
                 else:
                     keyboard = notifier.get_status_keyboard(state=PrintState.STANDBY)
                     if keyboard:
