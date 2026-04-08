@@ -203,6 +203,7 @@ async def unknown_chat(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def status_no_confirm(effective_message: Message) -> None:
     is_inline_button_press = effective_message.from_user is not None and effective_message.from_user.id == effective_message.get_bot().id
+
     if klippy.printing and not config_wrap.notifications.group_only:
         notifier.update_status()
     else:
@@ -212,24 +213,16 @@ async def status_no_confirm(effective_message: Message) -> None:
         if len(status_cameras) > 1:
             photos = list(await asyncio.gather(*(loop_loc.run_in_executor(executors_pool, cam.take_photo) for cam in status_cameras)))
             try:
-                if is_inline_button_press:
-                    await message.update_existing_media_group([effective_message], photos)
-                else:
-                    await message.send_as_reply_media_group(effective_message, photos)
+                await message.update_existing_media_group([effective_message], photos, is_inline_button_press=is_inline_button_press)
             finally:
                 for photo in photos:
                     photo.close()
         elif len(status_cameras) == 1:
             with await loop_loc.run_in_executor(executors_pool, status_cameras[0].take_photo) as bio:
-                if is_inline_button_press:
-                    await message.update_existing(effective_message, photo=bio)
-                else:
-                    await message.send_as_reply(effective_message, photo=bio)
+                await message.update_existing(effective_message, photo=bio, is_inline_button_press=is_inline_button_press)
                 bio.close()
-        elif is_inline_button_press:
-            await message.update_existing(effective_message)
         else:
-            await message.send_as_reply(effective_message)
+            await message.update_existing(effective_message, is_inline_button_press=is_inline_button_press)
 
 
 async def status(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:

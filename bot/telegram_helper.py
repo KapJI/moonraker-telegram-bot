@@ -75,7 +75,11 @@ class TelegramMessageRepr:
             message_thread_id=message_thread_id,
         )
 
-    async def update_existing(self, other_message: Message, photo: BytesIO | bytes | None = None) -> None:
+    async def update_existing(self, other_message: Message, photo: BytesIO | bytes | None = None, is_inline_button_press: bool = False) -> None:
+        if is_inline_button_press:
+            await self.send_as_reply(other_message, photo)
+            return
+
         if photo:
             # TODO: [fixme] check if media in message!
             await other_message.edit_media(media=InputMediaPhoto(photo))
@@ -118,7 +122,11 @@ class TelegramMessageRepr:
             )
         )
 
-    async def update_existing_media_group(self, messages: list[Message], photos: Sequence[BytesIO | bytes]) -> None:
+    async def update_existing_media_group(self, messages: list[Message], photos: Sequence[BytesIO | bytes], is_inline_button_press: bool = False) -> None:
+        if is_inline_button_press:
+            await self.send_as_reply_media_group(messages[0], photos)
+            return
+
         for i, (msg, photo) in enumerate(zip(messages, photos)):
             if i == 0:
                 await msg.edit_media(
