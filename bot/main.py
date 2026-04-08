@@ -235,13 +235,17 @@ async def status_no_confirm(effective_message: Message, album_message_ids: list[
             try:
                 if is_inline_button_press and album_message_ids:
                     bot = effective_message.get_bot()
-                    for i, mid in enumerate(album_message_ids):
-                        if i < len(photos):
-                            await bot.edit_message_media(
+                    await asyncio.gather(
+                        *(
+                            bot.edit_message_media(
                                 chat_id=effective_message.chat_id,
                                 message_id=mid,
                                 media=InputMediaPhoto(photos[i]),
                             )
+                            for i, mid in enumerate(album_message_ids)
+                            if i < len(photos)
+                        )
+                    )
                 else:
                     keyboard = notifier.get_status_keyboard(state=PrintState.STANDBY)
                     if keyboard:

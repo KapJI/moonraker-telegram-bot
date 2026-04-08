@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from telegram import Bot, InlineKeyboardMarkup, InputMediaPhoto, Message
@@ -123,11 +124,15 @@ class TelegramMessageRepr:
         )
 
     async def update_existing_media_group(self, messages: list[Message], photos: Sequence[BytesIO | bytes]) -> None:
+        edits = []
         for i, (msg, photo) in enumerate(zip(messages, photos)):
             if i == 0:
-                await msg.edit_media(
-                    media=InputMediaPhoto(photo, caption=self._text, parse_mode=self._parse_mode),
-                    reply_markup=self._reply_markup,
+                edits.append(
+                    msg.edit_media(
+                        media=InputMediaPhoto(photo, caption=self._text, parse_mode=self._parse_mode),
+                        reply_markup=self._reply_markup,
+                    )
                 )
             else:
-                await msg.edit_media(media=InputMediaPhoto(photo))
+                edits.append(msg.edit_media(media=InputMediaPhoto(photo)))
+        await asyncio.gather(*edits)
