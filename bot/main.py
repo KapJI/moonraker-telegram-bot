@@ -201,7 +201,7 @@ async def unknown_chat(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Unauthorized access detected from `%s` with chat_id `%s`. Message: %s", update.effective_chat.username, update.effective_chat.id, update.effective_message.to_json())
 
 
-async def status_no_confirm(effective_message: Message) -> None:
+async def status_no_confirm(effective_message: Message, album_message_ids: list[int] | None = None) -> None:
     is_inline_button_press = effective_message.from_user is not None and effective_message.from_user.id == effective_message.get_bot().id
 
     if klippy.printing and not config_wrap.notifications.group_only:
@@ -213,17 +213,42 @@ async def status_no_confirm(effective_message: Message) -> None:
         if len(status_cameras) > 1:
             photos = list(await asyncio.gather(*(loop_loc.run_in_executor(executors_pool, cam.take_photo) for cam in status_cameras)))
             try:
-                logger.info("Sending multi-camera status, edit=%s, keyboard=%s", is_inline_button_press, notifier.get_status_keyboard(state=PrintState.STANDBY))
-                await message.send_or_edit_media_group(effective_message, photos, edit=is_inline_button_press)
+                if is_inline_button_press and album_message_ids:
+                    bot = effective_message.get_bot()
+                    for i, mid in enumerate(album_message_ids):
+                        if i < len(photos):
+                            await bot.edit_message_media(
+                                chat_id=effective_message.chat_id,
+                                message_id=mid,
+                                media=InputMediaPhoto(photos[i]),
+                            )
+                    keyboard = notifier.get_status_keyboard(state=PrintState.STANDBY, album_message_ids=album_message_ids)
+                    message = TelegramMessageRepr(text, parse_mode=ParseMode.HTML, silent=notifier.silent_commands, reply_markup=keyboard)
+                    await message.update_existing(effective_message)
+                else:
+                    album_msg = TelegramMessageRepr(silent=notifier.silent_commands)
+                    sent = await album_msg.send_as_reply_media_group(effective_message, photos)
+                    keyboard = notifier.get_status_keyboard(state=PrintState.STANDBY, album_message_ids=[m.message_id for m in sent])
+                    if keyboard:
+                        message = TelegramMessageRepr(text, parse_mode=ParseMode.HTML, silent=notifier.silent_commands, reply_markup=keyboard)
+                        await message.send(effective_message.get_bot(), effective_message.chat_id)
+                    else:
+                        message = TelegramMessageRepr(text, parse_mode=ParseMode.HTML, silent=notifier.silent_commands)
+                        await message.send_as_reply_media_group(effective_message, photos)
             finally:
                 for photo in photos:
                     photo.close()
         elif len(status_cameras) == 1:
             with await loop_loc.run_in_executor(executors_pool, status_cameras[0].take_photo) as bio:
-                await message.send_or_edit(effective_message, photo=bio, edit=is_inline_button_press)
+                if is_inline_button_press:
+                    await message.update_existing(effective_message, photo=bio)
+                else:
+                    await message.send_as_reply(effective_message, photo=bio)
                 bio.close()
+        elif is_inline_button_press:
+            await message.update_existing(effective_message)
         else:
-            await message.send_or_edit(effective_message, edit=is_inline_button_press)
+            await message.send_as_reply(effective_message)
 
 
 async def status(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -782,8 +807,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif "gcode:" in query.data:
         await ws_helper.execute_ws_gcode_script(query.data.replace("gcode:", ""))
         delete_query = False
-    elif "updstatus" in query.data:
-        await status_no_confirm(update.effective_message)
+    elif query.data is not None and query.data.startswith("updstatus"):
+        album_ids = None
+        if ":" in query.data:
+            album_ids = [int(mid) for mid in query.data.split(":", 1)[1].split(",")]
+        await status_no_confirm(update.effective_message, album_message_ids=album_ids)
         delete_query = False
     elif update.effective_message.reply_to_message is None:
         logger.error("Undefined reply_to_message for %s", update.effective_message.to_json())

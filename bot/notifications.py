@@ -145,15 +145,18 @@ class Notifier:
             self._interval = new_value
             self._reschedule_notifier_timer()
 
-    def get_status_keyboard(self, state: PrintState) -> InlineKeyboardMarkup | None:
+    def get_status_keyboard(self, state: PrintState, album_message_ids: list[int] | None = None) -> InlineKeyboardMarkup | None:
         inline_keyboard = None
         if self._use_status_update_button and not state.is_finished:
+            callback_data = "updstatus"
+            if album_message_ids:
+                callback_data += ":" + ",".join(str(mid) for mid in album_message_ids)
             inline_keyboard = InlineKeyboardMarkup(
                 [
                     [
                         InlineKeyboardButton(
                             text="Update",
-                            callback_data="updstatus",
+                            callback_data=callback_data,
                         ),
                     ],
                 ],
@@ -236,13 +239,17 @@ class Notifier:
                 await message.update_existing_media_group(self._status_media_group, photos)
                 await self._send_bzz_message(message)
             else:
-                sent_messages = await message.send_media_group(self._bot, self._chat_id, photos)
+                keyboard = self.get_status_keyboard(state=PrintState.PRINTING)
+                if keyboard:
+                    album_msg = TelegramMessageRepr(silent=message.is_silent())
+                    sent_messages = await album_msg.send_media_group(self._bot, self._chat_id, photos)
+                else:
+                    sent_messages = await message.send_media_group(self._bot, self._chat_id, photos)
                 if not self._status_media_group and not manual:
                     self._status_media_group = sent_messages
-                    self._status_message = sent_messages[0]
-                    for photo in photos:
-                        photo.seek(0)
-                    await message.update_existing_media_group(sent_messages, photos)
+                    if keyboard:
+                        btn_msg = await message.send(self._bot, self._chat_id)
+                        self._status_message = btn_msg
 
         for group, message_thread_id in self._notify_groups:
             for photo in photos:
@@ -490,9 +497,16 @@ class Notifier:
             path = [""]
         return path
 
-    async def _send_image(self, paths: list[str], message: str) -> None:
+    async def _send_media(
+        self,
+        paths: list[str],
+        message: str,
+        media_class: type[InputMediaPhoto | InputMediaVideo | InputMediaDocument],
+        media_name: str,
+        error_prefix: str,
+    ) -> None:
         try:
-            photos_list: list[InputMediaAudio | InputMediaDocument | InputMediaPhoto | InputMediaVideo] = []
+            media_list: list[InputMediaAudio | InputMediaDocument | InputMediaPhoto | InputMediaVideo] = []
             for path in paths:
                 path_obj = anyio.Path(path)
                 if not await path_obj.is_file():
@@ -506,95 +520,38 @@ class Notifier:
                     bio.write(await fh.read())
                 bio.seek(0)
                 if bio.getbuffer().nbytes > self._max_upload_file_size * 1024 * 1024:
-                    await self._bot.send_message(self._chat_id, text=f"Telegram bots have a {self._max_upload_file_size}mb filesize restriction, image couldn't be uploaded: `{path}`")
-                elif not photos_list:
-                    photos_list.append(InputMediaPhoto(bio, filename=bio.name, caption=message))
+                    await self._bot.send_message(self._chat_id, text=f"Telegram bots have a {self._max_upload_file_size}mb filesize restriction, {media_name} couldn't be uploaded: `{path}`")
+                elif not media_list:
+                    media_list.append(media_class(bio, filename=bio.name, caption=message))
                 else:
-                    photos_list.append(InputMediaPhoto(bio, filename=bio.name))
+                    media_list.append(media_class(bio, filename=bio.name))
                 bio.close()
 
             await self._bot.send_media_group(
                 self._chat_id,
-                media=photos_list,
-                disable_notification=self._silent_commands,
-            )
-
-        except Exception as ex:
-            logger.warning(ex)
-            await self._bot.send_message(self._chat_id, text=f"Error sending image: {ex}", disable_notification=self._silent_commands)
-
-    def send_image(self, ws_message: str) -> None:
-        self._schedule_job(self._send_image, {"paths": self._parse_path(ws_message), "message": self._parse_message(ws_message)})
-
-    async def _send_video(self, paths: list[str], message: str) -> None:
-        try:
-            photos_list: list[InputMediaAudio | InputMediaDocument | InputMediaPhoto | InputMediaVideo] = []
-            for path in paths:
-                path_obj = anyio.Path(path)
-                if not await path_obj.is_file():
-                    await self._bot.send_message(self._chat_id, text="Provided path is not a file", disable_notification=self._silent_commands)
-                    return
-
-                bio = BytesIO()
-                bio.name = path_obj.name
-
-                async with aiofiles.open(path_obj, "rb") as fh:
-                    bio.write(await fh.read())
-                bio.seek(0)
-                if bio.getbuffer().nbytes > self._max_upload_file_size * 1024 * 1024:
-                    await self._bot.send_message(self._chat_id, text=f"Telegram bots have a {self._max_upload_file_size}mb filesize restriction, video couldn't be uploaded: `{path}`")
-                elif not photos_list:
-                    photos_list.append(InputMediaVideo(bio, filename=bio.name, caption=message))
-                else:
-                    photos_list.append(InputMediaVideo(bio, filename=bio.name))
-                bio.close()
-
-            await self._bot.send_media_group(
-                self._chat_id,
-                media=photos_list,
+                media=media_list,
                 disable_notification=self._silent_commands,
                 write_timeout=120,
             )
 
         except Exception as ex:
             logger.warning(ex)
-            await self._bot.send_message(self._chat_id, text=f"Error sending video: {ex}", disable_notification=self._silent_commands)
+            await self._bot.send_message(self._chat_id, text=f"Error sending {error_prefix}: {ex}", disable_notification=self._silent_commands)
+
+    async def _send_image(self, paths: list[str], message: str) -> None:
+        await self._send_media(paths, message, InputMediaPhoto, "image", "image")
+
+    async def _send_video(self, paths: list[str], message: str) -> None:
+        await self._send_media(paths, message, InputMediaVideo, "video", "video")
+
+    async def _send_document(self, paths: list[str], message: str) -> None:
+        await self._send_media(paths, message, InputMediaDocument, "document", "document")
+
+    def send_image(self, ws_message: str) -> None:
+        self._schedule_job(self._send_image, {"paths": self._parse_path(ws_message), "message": self._parse_message(ws_message)})
 
     def send_video(self, ws_message: str) -> None:
         self._schedule_job(self._send_video, {"paths": self._parse_path(ws_message), "message": self._parse_message(ws_message)})
-
-    async def _send_document(self, paths: list[str], message: str) -> None:
-        try:
-            photos_list: list[InputMediaAudio | InputMediaDocument | InputMediaPhoto | InputMediaVideo] = []
-            for path in paths:
-                path_obj = anyio.Path(path)
-                if not await path_obj.is_file():
-                    await self._bot.send_message(self._chat_id, text="Provided path is not a file", disable_notification=self._silent_commands)
-                    return
-
-                bio = BytesIO()
-                bio.name = path_obj.name
-
-                async with aiofiles.open(path_obj, "rb") as fh:
-                    bio.write(await fh.read())
-                bio.seek(0)
-                if bio.getbuffer().nbytes > self._max_upload_file_size * 1024 * 1024:
-                    await self._bot.send_message(self._chat_id, text=f"Telegram bots have a {self._max_upload_file_size}mb filesize restriction, document couldn't be uploaded: `{path}`")
-                elif not photos_list:
-                    photos_list.append(InputMediaDocument(bio, filename=bio.name, caption=message))
-                else:
-                    photos_list.append(InputMediaDocument(bio, filename=bio.name))
-                bio.close()
-
-            await self._bot.send_media_group(
-                self._chat_id,
-                media=photos_list,
-                disable_notification=self._silent_commands,
-            )
-
-        except Exception as ex:
-            logger.warning(ex)
-            await self._bot.send_message(self._chat_id, text=f"Error sending document: {ex}", disable_notification=self._silent_commands)
 
     def send_document(self, ws_message: str) -> None:
         self._schedule_job(self._send_document, {"paths": self._parse_path(ws_message), "message": self._parse_message(ws_message)})
