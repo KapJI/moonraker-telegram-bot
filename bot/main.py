@@ -220,17 +220,18 @@ async def status_no_confirm(effective_message: Message, album_message_ids: list[
             else:
                 await effective_message.get_bot().send_chat_action(effective_message.chat_id, action=ChatAction.UPLOAD_PHOTO)
             results = await asyncio.gather(*(loop_loc.run_in_executor(executors_pool, cam.take_photo) for cam in status_cameras), return_exceptions=True)
-            photos: list[BytesIO] = []
+            photos: list[BytesIO | None] = []
             for cam, result in zip(status_cameras, results):
                 if isinstance(result, BaseException):
                     await effective_message.reply_text(f"Camera '{cam.name}' failed: {result}", do_quote=True)
-                    continue
-                if result.getbuffer().nbytes == 0:
+                    photos.append(None)
+                elif result.getbuffer().nbytes == 0:
                     await effective_message.reply_text(f"Camera '{cam.name}' returned empty photo", do_quote=True)
                     result.close()
-                    continue
-                photos.append(result)
-            if not photos:
+                    photos.append(None)
+                else:
+                    photos.append(result)
+            if not any(photos):
                 return
             try:
                 if is_inline_button_press and album_message_ids:
@@ -240,24 +241,26 @@ async def status_no_confirm(effective_message: Message, album_message_ids: list[
                             bot.edit_message_media(
                                 chat_id=effective_message.chat_id,
                                 message_id=mid,
-                                media=InputMediaPhoto(photos[i]),
+                                media=InputMediaPhoto(photo),
                             )
-                            for i, mid in enumerate(album_message_ids)
-                            if i < len(photos)
+                            for mid, photo in zip(album_message_ids, photos)
+                            if photo is not None
                         )
                     )
                 else:
+                    valid_photos = [p for p in photos if p is not None]
                     keyboard = notifier.get_status_keyboard(state=PrintState.STANDBY)
                     if keyboard:
                         album_msg = TelegramMessageRepr(silent=notifier.silent_commands)
-                        sent = await album_msg.send_as_reply_media_group(effective_message, photos)
+                        sent = await album_msg.send_as_reply_media_group(effective_message, valid_photos)
                         keyboard = notifier.get_status_keyboard(state=PrintState.STANDBY, album_message_ids=[m.message_id for m in sent])
                         await message.with_reply_markup(keyboard).send(effective_message.get_bot(), effective_message.chat_id)
                     else:
-                        await message.send_as_reply_media_group(effective_message, photos)
+                        await message.send_as_reply_media_group(effective_message, valid_photos)
             finally:
                 for photo in photos:
-                    photo.close()
+                    if photo is not None:
+                        photo.close()
         elif len(status_cameras) == 1:
             with await loop_loc.run_in_executor(executors_pool, status_cameras[0].take_photo) as bio:
                 if is_inline_button_press:

@@ -196,39 +196,44 @@ class Notifier:
                     continue
                 self._groups_status_messages[group] = sent_message
 
-    async def _take_photos(self) -> list[BytesIO]:
+    async def _take_photos(self) -> list[BytesIO | None]:
+        """Take photos from all status cameras. Returns list aligned with _status_cameras — None for failures."""
         loop = asyncio.get_running_loop()
         results = await asyncio.gather(
             *(loop.run_in_executor(self._executors_pool, cam.take_photo) for cam in self._status_cameras),
             return_exceptions=True,
         )
-        photos: list[BytesIO] = []
+        photos: list[BytesIO | None] = []
         for cam, result in zip(self._status_cameras, results):
             if isinstance(result, BaseException):
                 logger.warning("Camera '%s' failed to take photo: %s", cam.name, result)
                 await self._bot.send_message(self._chat_id, text=f"Camera '{cam.name}' failed to take photo: {result}")
-                continue
-            if result.getbuffer().nbytes == 0:
+                photos.append(None)
+            elif result.getbuffer().nbytes == 0:
                 logger.warning("Camera '%s' returned empty photo", cam.name)
                 await self._bot.send_message(self._chat_id, text=f"Camera '{cam.name}' returned empty photo")
                 result.close()
-                continue
-            photos.append(result)
+                photos.append(None)
+            else:
+                photos.append(result)
         return photos
 
     async def _send_photo(self, message: TelegramMessageRepr, group_only: bool = False, manual: bool = False) -> None:
         if not self._status_cameras:
             return
-        photos = await self._take_photos()
-        if not photos:
+        all_photos = await self._take_photos()
+        valid_photos = [p for p in all_photos if p is not None]
+        if not valid_photos:
             return
         try:
-            if len(photos) == 1:
-                await self._send_single_photo(message, photos[0], group_only=group_only, manual=manual)
+            if len(self._status_cameras) == 1:
+                await self._send_single_photo(message, valid_photos[0], group_only=group_only, manual=manual)
+            elif self._status_media_group:
+                await self._update_multi_photo(message, all_photos, group_only=group_only)
             else:
-                await self._send_multi_photo(message, photos, group_only=group_only, manual=manual)
+                await self._send_multi_photo(message, valid_photos, group_only=group_only, manual=manual)
         finally:
-            for photo in photos:
+            for photo in valid_photos:
                 photo.close()
 
     async def _send_single_photo(self, message: TelegramMessageRepr, photo: BytesIO, group_only: bool = False, manual: bool = False) -> None:
@@ -251,41 +256,52 @@ class Notifier:
                 if group not in self._groups_status_messages and not manual:
                     self._groups_status_messages[group] = sent_message
 
+    async def _update_multi_photo(self, message: TelegramMessageRepr, all_photos: list[BytesIO | None], group_only: bool = False) -> None:
+        """Update existing album, skipping slots where the camera failed."""
+        if not group_only:
+            edits = [msg.edit_media(media=InputMediaPhoto(photo)) for msg, photo in zip(self._status_media_group, all_photos) if photo is not None]
+            if edits:
+                await asyncio.gather(*edits)
+            if self._status_message and self._status_message.message_id not in {m.message_id for m in self._status_media_group}:
+                # Telegram rejects edit if status text hasn't changed
+                with contextlib.suppress(BadRequest):
+                    await message.update_existing(self._status_message)
+            await self._send_bzz_message(message)
+
+        for group, _thread_id in self._notify_groups:
+            if group in self._groups_status_media_group:
+                for photo in all_photos:
+                    if photo is not None:
+                        photo.seek(0)
+                edits = [msg.edit_media(media=InputMediaPhoto(photo)) for msg, photo in zip(self._groups_status_media_group[group], all_photos) if photo is not None]
+                if edits:
+                    await asyncio.gather(*edits)
+
     async def _send_multi_photo(self, message: TelegramMessageRepr, photos: list[BytesIO], group_only: bool = False, manual: bool = False) -> None:
         if not group_only:
-            if self._status_media_group and not manual:
-                await message.update_existing_media_group(self._status_media_group, photos)
-                if self._status_message and self._status_message.message_id not in {m.message_id for m in self._status_media_group}:
-                    # Telegram rejects edit if status text hasn't changed
-                    with contextlib.suppress(BadRequest):
-                        await message.update_existing(self._status_message)
-                await self._send_bzz_message(message)
+            if self._status_message and not manual:
+                # Delete orphaned preview message from print start
+                with contextlib.suppress(BadRequest):
+                    await self._bot.delete_message(self._chat_id, self._status_message.message_id)
+            keyboard = self.get_status_keyboard(state=PrintState.PRINTING)
+            if keyboard:
+                album_msg = TelegramMessageRepr(silent=message.is_silent())
+                sent_messages = await album_msg.send_media_group(self._bot, self._chat_id, photos)
+                if not manual:
+                    self._status_media_group = sent_messages
+                    keyboard = self.get_status_keyboard(state=PrintState.PRINTING, album_message_ids=[m.message_id for m in sent_messages])
+                    self._status_message = await message.with_reply_markup(keyboard).send(self._bot, self._chat_id)
             else:
-                if self._status_message and not manual:
-                    # Delete orphaned preview message from print start
-                    with contextlib.suppress(BadRequest):
-                        await self._bot.delete_message(self._chat_id, self._status_message.message_id)
-                keyboard = self.get_status_keyboard(state=PrintState.PRINTING)
-                if keyboard:
-                    album_msg = TelegramMessageRepr(silent=message.is_silent())
-                    sent_messages = await album_msg.send_media_group(self._bot, self._chat_id, photos)
-                    if not manual:
-                        self._status_media_group = sent_messages
-                        keyboard = self.get_status_keyboard(state=PrintState.PRINTING, album_message_ids=[m.message_id for m in sent_messages])
-                        self._status_message = await message.with_reply_markup(keyboard).send(self._bot, self._chat_id)
-                else:
-                    sent_messages = await message.send_media_group(self._bot, self._chat_id, photos)
-                    if not manual:
-                        self._status_media_group = sent_messages
-                        self._status_message = sent_messages[0]
+                sent_messages = await message.send_media_group(self._bot, self._chat_id, photos)
+                if not manual:
+                    self._status_media_group = sent_messages
+                    self._status_message = sent_messages[0]
 
         for group, message_thread_id in self._notify_groups:
             for photo in photos:
                 photo.seek(0)
             await self._bot.send_chat_action(chat_id=group, message_thread_id=message_thread_id, action=ChatAction.UPLOAD_PHOTO)
-            if group in self._groups_status_media_group and not manual:
-                await message.update_existing_media_group(self._groups_status_media_group[group], photos)
-            else:
+            if group not in self._groups_status_media_group or manual:
                 sent_messages = await message.send_media_group(self._bot, group, photos, message_thread_id=message_thread_id)
                 if group not in self._groups_status_media_group and not manual:
                     self._groups_status_media_group[group] = sent_messages
