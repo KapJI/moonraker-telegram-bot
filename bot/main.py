@@ -211,6 +211,8 @@ async def status_no_confirm(effective_message: Message, album_message_ids: list[
         message = TelegramMessageRepr(text, parse_mode=ParseMode.HTML, silent=notifier.silent_commands, reply_markup=notifier.get_status_keyboard(state=PrintState.STANDBY))
         loop_loc = asyncio.get_running_loop()
         if len(status_cameras) > 1:
+            if not is_inline_button_press:
+                await effective_message.get_bot().send_chat_action(effective_message.chat_id, action=ChatAction.UPLOAD_PHOTO)
             photos = list(await asyncio.gather(*(loop_loc.run_in_executor(executors_pool, cam.take_photo) for cam in status_cameras)))
             try:
                 if is_inline_button_press and album_message_ids:
@@ -224,16 +226,17 @@ async def status_no_confirm(effective_message: Message, album_message_ids: list[
                             )
                     keyboard = notifier.get_status_keyboard(state=PrintState.STANDBY, album_message_ids=album_message_ids)
                     message = TelegramMessageRepr(text, parse_mode=ParseMode.HTML, silent=notifier.silent_commands, reply_markup=keyboard)
-                    await message.update_existing(effective_message)
+                    # Telegram rejects edit if status text hasn't changed (idle printer)
+                    with contextlib.suppress(BadRequest):
+                        await message.update_existing(effective_message)
                 else:
-                    album_msg = TelegramMessageRepr(silent=notifier.silent_commands)
-                    sent = await album_msg.send_as_reply_media_group(effective_message, photos)
-                    keyboard = notifier.get_status_keyboard(state=PrintState.STANDBY, album_message_ids=[m.message_id for m in sent])
+                    keyboard = notifier.get_status_keyboard(state=PrintState.STANDBY)
                     if keyboard:
-                        message = TelegramMessageRepr(text, parse_mode=ParseMode.HTML, silent=notifier.silent_commands, reply_markup=keyboard)
-                        await message.send(effective_message.get_bot(), effective_message.chat_id)
+                        album_msg = TelegramMessageRepr(silent=notifier.silent_commands)
+                        sent = await album_msg.send_as_reply_media_group(effective_message, photos)
+                        keyboard = notifier.get_status_keyboard(state=PrintState.STANDBY, album_message_ids=[m.message_id for m in sent])
+                        await message.with_reply_markup(keyboard).send(effective_message.get_bot(), effective_message.chat_id)
                     else:
-                        message = TelegramMessageRepr(text, parse_mode=ParseMode.HTML, silent=notifier.silent_commands)
                         await message.send_as_reply_media_group(effective_message, photos)
             finally:
                 for photo in photos:

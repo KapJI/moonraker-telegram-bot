@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import contextlib
 from datetime import datetime
 from io import BytesIO
 import logging
@@ -237,19 +238,29 @@ class Notifier:
         if not group_only:
             if self._status_media_group and not manual:
                 await message.update_existing_media_group(self._status_media_group, photos)
+                if self._status_message and self._status_message.message_id not in {m.message_id for m in self._status_media_group}:
+                    # Telegram rejects edit if status text hasn't changed
+                    with contextlib.suppress(BadRequest):
+                        await message.update_existing(self._status_message)
                 await self._send_bzz_message(message)
             else:
+                if self._status_message and not manual:
+                    # Delete orphaned preview message from print start
+                    with contextlib.suppress(BadRequest):
+                        await self._bot.delete_message(self._chat_id, self._status_message.message_id)
                 keyboard = self.get_status_keyboard(state=PrintState.PRINTING)
                 if keyboard:
                     album_msg = TelegramMessageRepr(silent=message.is_silent())
                     sent_messages = await album_msg.send_media_group(self._bot, self._chat_id, photos)
+                    if not manual:
+                        self._status_media_group = sent_messages
+                        keyboard = self.get_status_keyboard(state=PrintState.PRINTING, album_message_ids=[m.message_id for m in sent_messages])
+                        self._status_message = await message.with_reply_markup(keyboard).send(self._bot, self._chat_id)
                 else:
                     sent_messages = await message.send_media_group(self._bot, self._chat_id, photos)
-                if not self._status_media_group and not manual:
-                    self._status_media_group = sent_messages
-                    if keyboard:
-                        btn_msg = await message.send(self._bot, self._chat_id)
-                        self._status_message = btn_msg
+                    if not manual:
+                        self._status_media_group = sent_messages
+                        self._status_message = sent_messages[0]
 
         for group, message_thread_id in self._notify_groups:
             for photo in photos:

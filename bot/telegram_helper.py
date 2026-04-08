@@ -35,6 +35,9 @@ class TelegramMessageRepr:
     def is_silent(self) -> bool:
         return self._silent
 
+    def with_reply_markup(self, reply_markup: InlineKeyboardMarkup | None) -> TelegramMessageRepr:
+        return TelegramMessageRepr(self._text, parse_mode=self._parse_mode, reply_markup=reply_markup, silent=self._silent, suppress_escaping=True)
+
     async def send_as_reply(self, other_message: Message, photo: BytesIO | bytes | None = None) -> None:
         if photo:
             await other_message.get_bot().send_chat_action(other_message.chat_id, action=ChatAction.UPLOAD_PHOTO)
