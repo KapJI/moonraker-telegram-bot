@@ -36,6 +36,7 @@ class TelegramMessageRepr:
         return self._silent
 
     def with_reply_markup(self, reply_markup: InlineKeyboardMarkup | None) -> TelegramMessageRepr:
+        # suppress_escaping=True because self._text is already escaped
         return TelegramMessageRepr(self._text, parse_mode=self._parse_mode, reply_markup=reply_markup, silent=self._silent, suppress_escaping=True)
 
     async def send_as_reply(self, other_message: Message, photo: BytesIO | bytes | None = None) -> None:
