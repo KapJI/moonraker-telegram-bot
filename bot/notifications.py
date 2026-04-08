@@ -8,7 +8,7 @@ from datetime import datetime
 from io import BytesIO
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import aiofiles
 import anyio
@@ -20,6 +20,8 @@ from klippy import Klippy, PrintState
 from telegram_helper import TelegramMessageRepr
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from apscheduler.schedulers.base import BaseScheduler  # type: ignore[import-untyped]
 
     from camera import Camera
@@ -265,7 +267,7 @@ class Notifier:
             if state.is_finished:
                 await self.reset_notifications()
 
-    def _schedule_job(self, func: Callable[..., object], kwargs: dict[str, object]) -> None:
+    def _schedule_job(self, func: Callable[..., object], kwargs: dict[str, Any]) -> None:
         self._sched.add_job(
             func,
             kwargs=kwargs,
@@ -275,7 +277,7 @@ class Notifier:
             replace_existing=False,
         )
 
-    def _schedule_one_shot(self, func: Callable[..., object], kwargs: dict[str, object] | None = None) -> None:
+    def _schedule_one_shot(self, func: Callable[..., object], kwargs: dict[str, Any] | None = None) -> None:
         self._sched.add_job(
             func,
             kwargs=kwargs or {},

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from telegram import Bot, InlineKeyboardMarkup, InputMediaPhoto, Message
 from telegram.constants import ChatAction, ParseMode
+from telegram.error import BadRequest
 from telegram.helpers import escape_markdown
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -75,11 +79,13 @@ class TelegramMessageRepr:
             message_thread_id=message_thread_id,
         )
 
-    async def update_existing(self, other_message: Message, photo: BytesIO | bytes | None = None, is_inline_button_press: bool = False) -> None:
-        if is_inline_button_press:
-            await self.send_as_reply(other_message, photo)
-            return
+    async def send_or_edit(self, other_message: Message, photo: BytesIO | bytes | None = None, *, edit: bool = False) -> None:
+        if edit:
+            await self.update_existing(other_message, photo=photo)
+        else:
+            await self.send_as_reply(other_message, photo=photo)
 
+    async def update_existing(self, other_message: Message, photo: BytesIO | bytes | None = None) -> None:
         if photo:
             # TODO: [fixme] check if media in message!
             await other_message.edit_media(media=InputMediaPhoto(photo))
@@ -122,11 +128,18 @@ class TelegramMessageRepr:
             )
         )
 
-    async def update_existing_media_group(self, messages: list[Message], photos: Sequence[BytesIO | bytes], is_inline_button_press: bool = False) -> None:
-        if is_inline_button_press:
-            await self.send_as_reply_media_group(messages[0], photos)
-            return
+    async def send_or_edit_media_group(self, other_message: Message, photos: Sequence[BytesIO | bytes], *, edit: bool = False) -> None:
+        if edit:
+            await self.update_existing_media_group([other_message], photos)
+        else:
+            sent = await self.send_as_reply_media_group(other_message, photos)
+            if self._reply_markup is not None:
+                try:
+                    await sent[0].edit_reply_markup(reply_markup=self._reply_markup)
+                except BadRequest:
+                    logger.info("Could not add reply_markup to media group")
 
+    async def update_existing_media_group(self, messages: list[Message], photos: Sequence[BytesIO | bytes]) -> None:
         for i, (msg, photo) in enumerate(zip(messages, photos)):
             if i == 0:
                 await msg.edit_media(

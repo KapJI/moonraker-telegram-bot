@@ -213,16 +213,17 @@ async def status_no_confirm(effective_message: Message) -> None:
         if len(status_cameras) > 1:
             photos = list(await asyncio.gather(*(loop_loc.run_in_executor(executors_pool, cam.take_photo) for cam in status_cameras)))
             try:
-                await message.update_existing_media_group([effective_message], photos, is_inline_button_press=is_inline_button_press)
+                logger.info("Sending multi-camera status, edit=%s, keyboard=%s", is_inline_button_press, notifier.get_status_keyboard(state=PrintState.STANDBY))
+                await message.send_or_edit_media_group(effective_message, photos, edit=is_inline_button_press)
             finally:
                 for photo in photos:
                     photo.close()
         elif len(status_cameras) == 1:
             with await loop_loc.run_in_executor(executors_pool, status_cameras[0].take_photo) as bio:
-                await message.update_existing(effective_message, photo=bio, is_inline_button_press=is_inline_button_press)
+                await message.send_or_edit(effective_message, photo=bio, edit=is_inline_button_press)
                 bio.close()
         else:
-            await message.update_existing(effective_message, is_inline_button_press=is_inline_button_press)
+            await message.send_or_edit(effective_message, edit=is_inline_button_press)
 
 
 async def status(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
