@@ -250,6 +250,19 @@ class WebSocketHelper:
                         self._klippy.update_sensor(key, value)
                         break
 
+    async def _sync_print_state(self, status_data: dict[str, Any]) -> None:
+        """Sync print state on initial connection without triggering notifications."""
+        print_stats = status_data["print_stats"]
+        state = print_stats.get("state")
+        if state in (PrintState.PRINTING, PrintState.PAUSED):
+            await self._update_print_stats_from_message(print_stats)
+            self._klippy.printing = True
+            self._klippy.paused = state == PrintState.PAUSED
+            self._notifier.add_notifier_timer()
+            if not self._timelapse.manual_mode:
+                self._timelapse.is_running = True
+                self._timelapse.paused = state == PrintState.PAUSED
+
     async def notify_status_update(self, message_params: list[dict[str, Any]]) -> None:
         await self._handle_status_update(message_params[0], schedule_notify=True)
 
@@ -265,7 +278,10 @@ class WebSocketHelper:
                 self._timelapse.take_lapse_photo(position_z)
 
         if "print_stats" in status_data:
-            await self.parse_print_stats(status_data)
+            if schedule_notify:
+                await self.parse_print_stats(status_data)
+            else:
+                await self._sync_print_state(status_data)
 
         if "display_status" in status_data:
             self._update_display_status(status_data["display_status"], schedule_notify=schedule_notify)
